@@ -5,10 +5,11 @@
 //
 // Run as:
 //
-// lonely_planet_test <taxonomy-xml-file> <destinations-xml-file> <output-directory> [ <section-names> ]
+// lonely_planet_test <taxonomy-xml-file> <destinations-xml-file>
+//                    <output-directory> [ <section-names> ]
 // where <section-names> defaults to "overview".
 //
-// Does *not* create <output-directory>.
+// Creates <output-directory> if necessary.
 //
 // TODO: read template from external file.
 // TODO: identify different content sections e.g.
@@ -16,6 +17,14 @@
 // <overview-stuff>
 // Money
 // <money-stuff>
+
+#ifdef WIN32
+// For _mkdir()
+#include <direct.h>
+#define MKDIR _mkdir
+#else
+#define MKDIR mkdir
+#endif
 
 #include <fstream>
 #include <iostream>
@@ -30,6 +39,61 @@
 using namespace std;
 using namespace rapidxml;
 
+// Classes:
+//
+//  XmlReader: reads a given XML file and uses RapidXml to parse it (once).
+//  XmlReader TODO:
+//  TODO: (1) make XmlReader abstract and/or make its constructor protected.
+//  TODO: (2) destructor should really close m_file if not already closed.
+//
+//  TaxonomyReader: vanilla specialisation of XmlReader, used by HtmlGenerator
+//  to extract from the XML a doubly-linked tree of destinations (well,
+//  RapidXml does that for us).
+//  TaxonomyReader TODO:
+//  TODO: (1) move the tree-traversal from HtmlGenerator::generateFilesForTree
+//  TODO: into a TaxonomyReader method, since HtmlGenerator has no business
+//  TODO: making assumptions about the form of the XML tree.
+//  TODO: (2) Similarly move the level-skipping into TaxonomyReader; also
+//  TODO: factorise it into a private method called three times.
+//
+//  DestinationsReader: specialisation of XmlReader which generates map of
+//  destination-to-description.
+//  DestinationsReader TODO:
+//  DONE: (1) allow nicely for distinguishing multiple content sections in
+//  DONE: description.
+//
+//  HtmlGenerator: generates the HTML files (who would have guessed?) by
+//  descending the tree held in TaxonomyReader and correlating the node-ids
+//  with the data mapped in DestinationsReader.
+//  HtmlGenerator TODO:
+//  TODO: (1) copy other necessary files e.g. stylesheet.
+//  TODO: (2) destructor should if necessary close currently-open html file
+//  TODO: stream (which hence should be a member).
+//  TODO: (3) consider generating links on each page to entire ancestor line
+//  TODO: of destinations rather than just immediate parent.
+//  TODO: (4) consider generating index page which displays entire destination
+//  TODO: hierarchy (possibly collapsible).
+//  TODO: (5) see also TaxonomyReader TODOs.
+//
+//  HtmlTemplate: singleton class to hold the HTML template strings.
+//  HtmlTemplate TODO:
+//  TODO: (1) read from template file instead of having it inline (yuk). Need
+//  TODO: to work out how to do the interpolation/substitution, though.
+//
+//  Main program:
+//  Main program TODO:
+//  TODO: (1) improve argument-handling: add flags.
+//  TODO: (2) plausibly allow handing in of format for generated file names
+//  TODO: (rather than hard-coding "lp_<node-id>.html").
+//  TODO: (3) cope with multiple tasks in one invocation.
+//  TODO: (4) investigate scalability.
+//  TODO: (5) investigate robustness, for example what happens if the
+//  TODO: recursive descent runs out of stack? (Well we know what happens, but
+//  TODO: how best to cope?)
+//  TODO: (6) consider generalisation. This is currently stand-alone and
+//  TODO: specialised, but the parse-some-xml-files-and-build-some-html could
+//  TODO: be useful in other contexts.
+//
 //============================================================================
 // Class declarations. Normally I would put these in a header for external
 // use, but this is stand-alone.
@@ -66,14 +130,17 @@ class DestinationsReader : public XmlReader
         void generateDestinationDescriptions
         (   const set<string> & sectionNames
         );
-        string getDestinationDescription ( int node_id ) const;
+        void getDestinationDescription
+        (   int node_id,
+            map< string, string > & description
+        ) const;
 
     private:
         void getSubTreeContent ( xml_node< char > * node );
 
         const set<string> * m_sectionNames;
-        map<int, string> m_descriptions;
-        string m_combinedContent;
+        map< int, map<string, string> > m_descriptions;
+        map< string, string> m_combinedContents;
 };
 
 // I could put the template parts in an external file(s) and read them
@@ -112,6 +179,8 @@ class HtmlGenerator
         void generateFiles ( const char * outputDirName );
 
     private:
+        void createDirectoryRecursively ( const string & directoryName ) const;
+        void createDirectory ( const string & directoryName ) const;
         void generateFilesForTree
         (   xml_node<char> * parent,
             xml_node<char> * node
@@ -135,7 +204,9 @@ extern int main ( int argc, char ** argv )
     // Check arguments.
     if ( argc < 4 )
     {
-        cerr << "Error: (" << argv[0] << ") needs <taxonomy-xml-file> <destinations-xml-file> <output-directory> [ <section-names> ]" << endl;
+        cerr << "Error: (" << argv[0]
+             << ") needs <taxonomy-xml-file> <destinations-xml-file> "
+             << "<output-directory> [ <section-names> ]" << endl;
         return 1;
     }
 
@@ -153,9 +224,10 @@ extern int main ( int argc, char ** argv )
     try
     {
         // Slurp and parse entire files. Note that because of the way that
-        // RapidXml works, we need to hang on to the file content strings as well
-        // as the generated XML tree (because the tree points directly back into
-        // the parsed text rather than making its own string copies).
+        // RapidXml works, we need to hang on to the file content strings as
+        // well as the generated XML tree (because the tree points directly
+        // back into the parsed text rather than making its own string
+        // copies).
         TaxonomyReader taxonomyReader ( argv[1] );
         taxonomyReader.readAndParse();
 
@@ -191,7 +263,8 @@ XmlReader::XmlReader
     if ( ! m_file.is_open() )
     {
         stringstream errorStream;
-        errorStream << "Failed to open " << fileSignifier << " file " << fileName << " for reading";
+        errorStream << "Failed to open " << fileSignifier << " file "
+                    << fileName << " for reading";
         throw errorStream.str();
     }
 }
@@ -208,7 +281,9 @@ void XmlReader::readAndParse()
     m_file.close();
 
     // Vile rapidxml declares input arg as char*, not const char *.
-    m_document.parse<0> ( const_cast<char*>(m_contents.c_str()) );  // 0 means default parse flags
+    // 0 means default parse flags
+    m_document.parse<0> ( const_cast<char*>(m_contents.c_str()) );
+
 }
 
 //----------------------------------------------------------------------------
@@ -228,19 +303,30 @@ void DestinationsReader::generateDestinationDescriptions
 )
 {
     m_sectionNames = &sectionNames;
-    xml_node<char> * destinationsChild = m_document.first_node ( "destinations" );
+    xml_node<char> * destinationsChild = m_document.first_node (
+        "destinations" );
     if ( destinationsChild != 0 )
     {
-        for ( xml_node<char> * destination = destinationsChild->first_node ( "destination" );
-              destination != 0; destination = destination->next_sibling ( "destination" ) )
+        for ( xml_node<char> * destination = destinationsChild->first_node (
+                  "destination" );
+              destination != 0;
+              destination = destination->next_sibling ( "destination" ) )
         {
             xml_attribute< char > * atlas_id =
                 destination->first_attribute ( "atlas_id" );
             if ( atlas_id != 0 )
             {
-                m_combinedContent = "";
-                getSubTreeContent ( destination );  // pick up all content from sub-tree
-                m_descriptions.insert ( pair<int, string> ( atoi ( atlas_id->value() ), m_combinedContent ) );
+                for ( set<string>::const_iterator iter = m_sectionNames->begin();
+                      iter != m_sectionNames->end(); ++iter )
+                {
+                    m_combinedContents[*iter] = "";
+                }
+                // Pick up all content from sub-tree.
+                getSubTreeContent ( destination );
+                for ( set<string>::const_iterator iter = m_sectionNames->begin();
+                      iter != m_sectionNames->end(); ++iter )
+                m_descriptions.insert ( pair< int, map< string, string > > (
+                    atoi ( atlas_id->value() ), m_combinedContents ) );
             }
         }
     }
@@ -258,9 +344,10 @@ void DestinationsReader::getSubTreeContent
         xml_node< char > * contentData = node->first_node();
         if ( contentData != 0 )
         {
-            m_combinedContent.append ( "<p>" );
-            m_combinedContent.append ( contentData->value() );
-            m_combinedContent.append ( "</p>" );
+            string & combinedContent = m_combinedContents[node->name()];
+            combinedContent.append ( "<p>" );
+            combinedContent.append ( contentData->value() );
+            combinedContent.append ( "</p>" );
         }
     }
     for ( xml_node<char> * child = node->first_node();
@@ -273,15 +360,17 @@ void DestinationsReader::getSubTreeContent
 //----------------------------------------------------------------------------
 // Find description for given node_id.
 
-string DestinationsReader::getDestinationDescription ( int node_id ) const
+void DestinationsReader::getDestinationDescription
+(   int node_id,
+    map< string, string > & description
+) const
 {
-    map<int, string>::const_iterator descriptionIter =
+    map< int, map< string, string > >::const_iterator descriptionIter =
         m_descriptions.find ( node_id );
     if ( descriptionIter != m_descriptions.end() )
     {
-        return descriptionIter->second;
+        description = descriptionIter->second;
     }
-    return "";
 }
 
 //============================================================================
@@ -290,7 +379,8 @@ void HtmlGenerator::generateFiles ( const char * outputDirName )
 {
     // First we have to skip some assumed higher-level nodes.
     const char * taxonomiesString = "taxonomies";
-    xml_node<char> * taxonomiesChild = m_taxonomyReader.getDocument().first_node ( taxonomiesString );
+    xml_node<char> * taxonomiesChild =
+        m_taxonomyReader.getDocument().first_node ( taxonomiesString );
     if ( 0 == taxonomiesChild )
     {
         stringstream errorStream;
@@ -300,7 +390,8 @@ void HtmlGenerator::generateFiles ( const char * outputDirName )
     }
 
     const char * taxonomyString = "taxonomy";
-    xml_node<char> * taxonomyChild = taxonomiesChild->first_node ( taxonomyString );
+    xml_node<char> * taxonomyChild = taxonomiesChild->first_node (
+        taxonomyString );
     if ( 0 == taxonomyChild )
     {
         stringstream errorStream;
@@ -310,7 +401,8 @@ void HtmlGenerator::generateFiles ( const char * outputDirName )
     }
 
     const char * taxonomy_nameString = "taxonomy_name";
-    xml_node<char> * taxonomy_nameChild = taxonomyChild->first_node ( taxonomy_nameString );
+    xml_node<char> * taxonomy_nameChild = taxonomyChild->first_node (
+        taxonomy_nameString );
     if ( 0 == taxonomy_nameChild )
     {
         stringstream errorStream;
@@ -319,9 +411,63 @@ void HtmlGenerator::generateFiles ( const char * outputDirName )
         throw errorStream.str();
     }
 
+    createDirectory ( outputDirName );
     m_outputDirectory = outputDirName;
     m_outputDirectory.append ( "/" );
     generateFilesForTree ( 0, taxonomy_nameChild->next_sibling() );
+}
+
+//----------------------------------------------------------------------------
+// Given a/b/c/d:
+// recursively call with a/b/c
+// recursively call with a/b
+// recursively call with a
+// create a
+// create a/b
+// create a/b/c
+// create a/b/c/d.
+
+void HtmlGenerator::createDirectoryRecursively
+(   const string & directoryName
+) const
+{
+    size_t lastSeparatorIndex = directoryName.find_last_of ( "\\/" );
+    if ( lastSeparatorIndex != string::npos )
+    {
+        createDirectoryRecursively ( directoryName.substr ( 0, lastSeparatorIndex ) );
+    }
+    // Blithely ignoring errors for now since we will eventually try to
+    // create files and that will indicate any mkdir failure implicitly.
+    // An error could merely indicate that the directory already exists.
+    MKDIR ( directoryName.c_str() );
+}
+
+//----------------------------------------------------------------------------
+// Given a/b/c/d:
+// create a
+// create a/b
+// create a/b/c
+// create a/b/c/d.
+
+void HtmlGenerator::createDirectory
+(   const string & directoryName
+) const
+{
+    size_t start = 0;
+    for(;;)
+    {
+        size_t firstSeparatorIndex = directoryName.find_first_of ( "\\/", start );
+        string dirName = directoryName.substr ( 0, firstSeparatorIndex );
+        // Blithely ignoring errors for now since we will eventually try to
+        // create files and that will indicate any mkdir failure implicitly.
+        // An error could merely indicate that the directory already exists.
+        MKDIR ( dirName.c_str() );
+        if ( firstSeparatorIndex == string::npos )
+        {
+            break;
+        }
+        start = firstSeparatorIndex+1;
+    }
 }
 
 //----------------------------------------------------------------------------
@@ -370,21 +516,25 @@ void HtmlGenerator::generateFile
     if ( ! htmlFile.is_open() )
     {
         stringstream errorStream;
-        errorStream << "Failed to open html file " << htmlFilePath << " for writing";
+        errorStream << "Failed to open html file " << htmlFilePath
+                    << " for writing";
         throw errorStream.str();
     }
 
     // Write template+substitutions.
-    htmlFile << m_template->getPart1() << node_name->value() << m_template->getPart2();
+    htmlFile << m_template->getPart1() << node_name->value()
+             << m_template->getPart2();
 
     if ( parent != 0 )
     {
         xml_attribute< char > * parent_atlas_node_id =
             parent->first_attribute ( "atlas_node_id" );
-        xml_node< char > * parent_node_name = parent->first_node ( "node_name" );
+        xml_node< char > * parent_node_name =
+            parent->first_node ( "node_name" );
         if ( parent_atlas_node_id != 0 && parent_node_name != 0 )
         {
-            htmlFile << "<p>Up to <a href=\"" << makeHtmlFileName ( parent_atlas_node_id ) << "\">"
+            htmlFile << "<p>Up to <a href=\""
+                     << makeHtmlFileName ( parent_atlas_node_id ) << "\">"
                      << parent_node_name->value() << "</a></p>";
         }
     }
@@ -394,18 +544,28 @@ void HtmlGenerator::generateFile
     {
         xml_attribute< char > * child_atlas_node_id =
             child->first_attribute ( "atlas_node_id" );
-        xml_node< char > * child_node_name = child->first_node ( "node_name" );
+        xml_node< char > * child_node_name =
+            child->first_node ( "node_name" );
         if ( child_atlas_node_id != 0 && child_node_name != 0 )
         {
-            htmlFile << "<p><a href=\"" << makeHtmlFileName ( child_atlas_node_id ) << "\">"
+            htmlFile << "<p><a href=\""
+                     << makeHtmlFileName ( child_atlas_node_id ) << "\">"
                      << child_node_name->value() << "</a></p>";
         }
     }
 
-    htmlFile << m_template->getPart3() << node_name->value() << m_template->getPart4()
-             << m_destinationsReader.getDestinationDescription
-                    ( atoi ( atlas_node_id->value() ) )
-             << m_template->getPart5();
+    htmlFile << m_template->getPart3() << node_name->value()
+             << m_template->getPart4();
+    map< string, string > description;
+    m_destinationsReader.getDestinationDescription ( atoi ( atlas_node_id->value() ), description );
+    for ( map< string, string >::const_iterator iter = description.begin();
+          iter != description.end(); ++iter )
+    {
+        string heading ( iter->first );
+        heading[0] = toupper ( heading[0] );
+        htmlFile << "<h3>" << heading << "</h3>" << iter->second;
+    }
+    htmlFile << m_template->getPart5();
 
     // Done.
     htmlFile.close();
@@ -414,7 +574,9 @@ void HtmlGenerator::generateFile
 //----------------------------------------------------------------------------
 // Build "lp_<nodeid>.html".
 
-string HtmlGenerator::makeHtmlFileName ( xml_attribute< char > * node_id ) const
+string HtmlGenerator::makeHtmlFileName
+(   xml_attribute< char > * node_id
+) const
 {
     string htmlFileName ( "lp_" );
     htmlFileName.append ( node_id->value() );
