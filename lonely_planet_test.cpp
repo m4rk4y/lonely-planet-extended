@@ -390,19 +390,6 @@ void HtmlGenerator::generateFiles ( const char * outputDirName )
         throw errorStream.str();
     }
 
-#if 0
-    const char * taxonomy_nameString = "taxonomy_name";
-    xml_node<char> * taxonomy_nameChild = taxonomyChild->first_node (
-        taxonomy_nameString );
-    if ( 0 == taxonomy_nameChild )
-    {
-        stringstream errorStream;
-        errorStream << "Mal-formed taxonomy document: found no third-level \""
-                    << taxonomy_nameString << "\" element";
-        throw errorStream.str();
-    }
-#endif
-
     // Fudge a root node for "World".
 
     // A usable node has an attribute "atlas_node_id" and a child_node
@@ -428,10 +415,9 @@ void HtmlGenerator::generateFiles ( const char * outputDirName )
 
     // ...
     //
-    //    <node atlas_node_id = "0" old_name="taxonomy">
+    //    <node atlas_node_id = "1">
     //      <node_name>World</node_name>
     //
-    //      <ignored_taxonomy_name>World</ignored_taxonomy_name>
     //      <node atlas_node_id = "355064" ethyl_content_object_id="82534" geo_id = "355064">
     //        <node_name>Africa</node_name>
     //        <node atlas_node_id = "355611" ethyl_content_object_id="3210" geo_id = "355611">
@@ -467,7 +453,6 @@ void HtmlGenerator::generateFiles ( const char * outputDirName )
     createDirectory ( outputDirName );
     m_outputDirectory = outputDirName;
     m_outputDirectory.append ( "/" );
-    //generateFilesForTree ( 0, taxonomy_nameChild->next_sibling() );
     generateFilesForTree ( taxonomyChild );
 }
 
