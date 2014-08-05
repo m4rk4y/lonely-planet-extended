@@ -12,11 +12,6 @@
 // Creates <output-directory> if necessary.
 //
 // TODO: read template from external file.
-// TODO: identify different content sections e.g.
-// Overview
-// <overview-stuff>
-// Money
-// <money-stuff>
 
 #ifdef WIN32
 // For _mkdir()
@@ -32,6 +27,7 @@
 #include <set>
 #include <string>
 #include <sstream>
+#include <vector>
 
 #include <rapidxml.hpp>
 #include <rapidxml_print.hpp>
@@ -54,7 +50,7 @@ using namespace rapidxml;
 //  TODO: into a TaxonomyReader method, since HtmlGenerator has no business
 //  TODO: making assumptions about the form of the XML tree.
 //  TODO: (2) Similarly move the level-skipping into TaxonomyReader; also
-//  TODO: factorise it into a private method called three times.
+//  TODO: factorise it into a private method called N times.
 //
 //  DestinationsReader: specialisation of XmlReader which generates map of
 //  destination-to-description.
@@ -181,14 +177,8 @@ class HtmlGenerator
     private:
         void createDirectoryRecursively ( const string & directoryName ) const;
         void createDirectory ( const string & directoryName ) const;
-        void generateFilesForTree
-        (   xml_node<char> * parent,
-            xml_node<char> * node
-        ) const;
-        void generateFile
-        (   xml_node<char> * parent,
-            xml_node<char> * node
-        ) const;
+        void generateFilesForTree ( xml_node<char> * node ) const;
+        void generateFile ( xml_node<char> * node ) const;
         string makeHtmlFileName ( xml_attribute< char > * node_id ) const;
 
         const TaxonomyReader & m_taxonomyReader;
@@ -400,6 +390,7 @@ void HtmlGenerator::generateFiles ( const char * outputDirName )
         throw errorStream.str();
     }
 
+#if 0
     const char * taxonomy_nameString = "taxonomy_name";
     xml_node<char> * taxonomy_nameChild = taxonomyChild->first_node (
         taxonomy_nameString );
@@ -410,11 +401,74 @@ void HtmlGenerator::generateFiles ( const char * outputDirName )
                     << taxonomy_nameString << "\" element";
         throw errorStream.str();
     }
+#endif
 
+    // Fudge a root node for "World".
+
+    // A usable node has an attribute "atlas_node_id" and a child_node
+    // identified as "node_name".
+    // Its children are all the child_nodes identified as "node".
+    // So we start with this:
+
+    //  <taxonomies>
+    //    <taxonomy>
+    //      <taxonomy_name>World</taxonomy_name>
+    //      <node atlas_node_id = "355064" ethyl_content_object_id="82534" geo_id = "355064">
+    //        <node_name>Africa</node_name>
+    //        <node atlas_node_id = "355611" ethyl_content_object_id="3210" geo_id = "355611">
+    //          <node_name>South Africa</node_name>
+    //          <node atlas_node_id = "355612" ethyl_content_object_id="35474" geo_id = "355612">
+    //            <node_name>Cape Town</node_name>
+    //            <node atlas_node_id = "355613" ethyl_content_object_id="" geo_id = "355613">
+    //              <node_name>Table Mountain National Park</node_name>
+    //            </node>
+    //          </node>
+
+    // but we want to end up with this:
+
+    // ...
+    //
+    //    <node atlas_node_id = "0" old_name="taxonomy">
+    //      <node_name>World</node_name>
+    //
+    //      <ignored_taxonomy_name>World</ignored_taxonomy_name>
+    //      <node atlas_node_id = "355064" ethyl_content_object_id="82534" geo_id = "355064">
+    //        <node_name>Africa</node_name>
+    //        <node atlas_node_id = "355611" ethyl_content_object_id="3210" geo_id = "355611">
+    //          <node_name>South Africa</node_name>
+    //          <node atlas_node_id = "355612" ethyl_content_object_id="35474" geo_id = "355612">
+    //            <node_name>Cape Town</node_name>
+    //            <node atlas_node_id = "355613" ethyl_content_object_id="" geo_id = "355613">
+    //              <node_name>Table Mountain National Park</node_name>
+    //            </node>
+    //          </node>
+
+    // Modify <taxonomy> to have an atlas_node_id=1 attribute.
+    xml_attribute<char> * atlasNodeIdAttr = new xml_attribute<char>;
+    string atlasNodeIdAttrName ( "atlas_node_id" );
+    atlasNodeIdAttr->name ( atlasNodeIdAttrName.c_str() );
+    string atlasNodeIdAttrValue ( "1" );
+    atlasNodeIdAttr->value ( atlasNodeIdAttrValue.c_str() );
+    taxonomyChild->append_attribute ( atlasNodeIdAttr );
+
+    // Give <taxonomy> a child data node <node_name>.
+    xml_node<char> * nodeNameNode = new xml_node<char> ( node_data );
+    string nodeNameNodeName ( "node_name" );
+    nodeNameNode->name ( nodeNameNodeName.c_str() );
+    string nodeNameNodeValue ( "World" );
+    nodeNameNode->value ( nodeNameNodeValue.c_str() );
+    taxonomyChild->append_node ( nodeNameNode );
+
+    // Rename <taxonomy> as <node>.
+    string taxonomyName ( "node" );
+    taxonomyChild->name ( taxonomyName.c_str() );
+
+    // Generate hierarchy.
     createDirectory ( outputDirName );
     m_outputDirectory = outputDirName;
     m_outputDirectory.append ( "/" );
-    generateFilesForTree ( 0, taxonomy_nameChild->next_sibling() );
+    //generateFilesForTree ( 0, taxonomy_nameChild->next_sibling() );
+    generateFilesForTree ( taxonomyChild );
 }
 
 //----------------------------------------------------------------------------
@@ -473,27 +527,39 @@ void HtmlGenerator::createDirectory
 //----------------------------------------------------------------------------
 // Recursive descent.
 
-void HtmlGenerator::generateFilesForTree
-(   xml_node<char> * parent,
-    xml_node<char> * node
-) const
+void HtmlGenerator::generateFilesForTree ( xml_node<char> * node ) const
 {
-    generateFile ( parent, node );
+    generateFile ( node );
     for ( xml_node<char> * child = node->first_node ( "node" );
           child != 0; child = child->next_sibling ( "node" ) )
     {
-        generateFilesForTree ( node, child );
+        generateFilesForTree ( child );
     }
 }
 
 //----------------------------------------------------------------------------
 // Create HTML file according to template.
+// A usable node has an attribute "atlas_node_id" and a child_node identified
+// as "node_name".
+// Its children are all the child_nodes identified as "node".
 
-void HtmlGenerator::generateFile
-(   xml_node<char> * parent,
-    xml_node<char> * node
-) const
+void HtmlGenerator::generateFile ( xml_node<char> * node ) const
 {
+#if 0
+    cout << "HtmlGenerator::generateFile: node " << node << " has value " << node->value() << endl;
+    for (xml_attribute<> *attr = node->first_attribute();
+         attr; attr = attr->next_attribute())
+    {
+        cout << "    Attribute " << attr->name() << " ";
+        cout << "with value " << attr->value() << endl;
+    }
+    for ( xml_node<char> * child = node->first_node ();
+          child != 0; child = child->next_sibling () )
+    {
+        cout << "    Child node " << child << " with name "<< child->name() << " and value " << child->value() << endl;
+    }
+#endif
+
     // Usable node?
     xml_attribute< char > * atlas_node_id =
         node->first_attribute ( "atlas_node_id" );
@@ -525,12 +591,18 @@ void HtmlGenerator::generateFile
     htmlFile << m_template->getPart1() << node_name->value()
              << m_template->getPart2();
 
-    if ( parent != 0 )
+    vector< xml_node<char>* > ancestors;
+    for ( xml_node<char>* parent = node->parent(); parent != 0; parent = parent->parent() )
+    {
+        ancestors.push_back ( parent );
+    }
+    for ( vector< xml_node<char>* >::reverse_iterator riter = ancestors.rbegin();
+          riter != ancestors.rend(); ++riter )
     {
         xml_attribute< char > * parent_atlas_node_id =
-            parent->first_attribute ( "atlas_node_id" );
+            (*riter)->first_attribute ( "atlas_node_id" );
         xml_node< char > * parent_node_name =
-            parent->first_node ( "node_name" );
+            (*riter)->first_node ( "node_name" );
         if ( parent_atlas_node_id != 0 && parent_node_name != 0 )
         {
             htmlFile << "<p>Up to <a href=\""
